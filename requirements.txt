@@ -1,0 +1,10 @@
+torch
+torchvision
+torchio
+numpy
+matplotlib
+nibabel
+SimpleITK
+opencv-python
+huggingface_hub
+pandas

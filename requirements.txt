@@ -8,3 +8,4 @@ SimpleITK
 opencv-python
 huggingface_hub
 pandas
+datasets

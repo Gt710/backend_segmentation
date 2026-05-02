@@ -1,0 +1,35 @@
+# Virtual environment
+venv/
+.venv/
+env/
+bin/
+lib/
+include/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data
+data/raw/
+data/processed/
+# Allow keeping directory structure with .gitkeep if needed
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

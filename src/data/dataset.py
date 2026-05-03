@@ -51,6 +51,20 @@ class BraTSDataset(Dataset):
         
         return torch.from_numpy(img_patch), torch.from_numpy(mask_patch)
 
+def get_dataloaders(csv_file, batch_size=2, patch_size=(64, 64, 64), val_split=0.2):
+    from torch.utils.data import DataLoader, random_split
+    
+    full_dataset = BraTSDataset(csv_file, patch_size)
+    val_size = int(len(full_dataset) * val_split)
+    train_size = len(full_dataset) - val_size
+    
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    
+    return train_loader, val_loader
+
 if __name__ == "__main__":
     print("Тестуємо PyTorch Dataset...")
     dataset = BraTSDataset("data/processed/dataset_index.csv", patch_size=(64, 64, 64))
@@ -59,3 +73,6 @@ if __name__ == "__main__":
     print(f"Формат вхідного тензора (зображення): {img_tensor.shape} (Має бути: 4, 64, 64, 64)")
     print(f"Формат вихідного тензора (маска): {mask_tensor.shape} (Має бути: 1, 64, 64, 64)")
     print(f"Тип даних маски: {mask_tensor.dtype}")
+    
+    train_loader, val_loader = get_dataloaders("data/processed/dataset_index.csv")
+    print(f"\nСтворено даталоадери. Тренувальних батчів: {len(train_loader)}, Валідаційних: {len(val_loader)}")

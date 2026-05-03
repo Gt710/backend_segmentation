@@ -11,12 +11,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Data
-data/raw/
-data/processed/
-# Allow keeping directory structure with .gitkeep if needed
-!data/raw/.gitkeep
-!data/processed/.gitkeep
+# Data and Documentation
+data/
+wiki/
+
 
 # Notebooks
 .ipynb_checkpoints/
@@ -33,3 +31,5 @@ Thumbs.db
 
 # Logs
 *.log
+
+

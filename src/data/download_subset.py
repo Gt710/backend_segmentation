@@ -9,12 +9,13 @@ def download_brats_subset():
     
     os.makedirs(local_dir, exist_ok=True)
     
-    print("Починаємо завантаження Dev-вибірки...")
+    print("Починаємо завантаження Dev-вибірки (збільшено до ~100 пацієнтів)...")
     
-    subset_patterns = [
-        "BraTS-GLI/train/*-0000*/*",     
-        "BraTS-MEN-RT/train/*-0000*/*"
-    ]
+    subset_patterns = []
+    # Завантажуємо перші 50 пацієнтів з GLI та 50 з MEN-RT
+    for i in range(50):
+        subset_patterns.append(f"BraTS-GLI/train/*-00{i:02d}*/*")
+        subset_patterns.append(f"BraTS-MEN-RT/train/*-00{i:02d}*/*")
     
     try:
         snapshot_download(

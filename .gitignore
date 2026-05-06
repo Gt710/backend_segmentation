@@ -13,7 +13,7 @@ __pycache__/
 
 # Data and Documentation
 data/
-wiki/
+# wiki/
 
 
 # Notebooks

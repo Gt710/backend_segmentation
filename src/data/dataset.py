@@ -22,7 +22,10 @@ class BraTSDataset(Dataset):
         t1c = nib.load(patient['t1c']).get_fdata().astype(np.float32)
         t2 = nib.load(patient['t2']).get_fdata().astype(np.float32)
         flair = nib.load(patient['flair']).get_fdata().astype(np.float32)
-        seg = nib.load(patient['seg']).get_fdata().astype(np.uint8) 
+        seg = nib.load(patient['seg']).get_fdata()
+        
+        # КРИТИЧНО: Бінаризація маски (Whole Tumor)
+        seg = (seg > 0).astype(np.float32) 
         
         min_c, max_c = get_bounding_box(flair)
         
@@ -49,7 +52,16 @@ class BraTSDataset(Dataset):
         img_patch = image_volume[:, start_h:start_h+ph, start_w:start_w+pw, start_d:start_d+pd_size]
         mask_patch = seg[np.newaxis, start_h:start_h+ph, start_w:start_w+pw, start_d:start_d+pd_size]
         
-        return torch.from_numpy(img_patch), torch.from_numpy(mask_patch)
+        # Data Augmentation: Випадкове віддзеркалення (без впливу на час завантаження)
+        if np.random.rand() > 0.5:
+            img_patch = np.flip(img_patch, axis=2)
+            mask_patch = np.flip(mask_patch, axis=2)
+        if np.random.rand() > 0.5:
+            img_patch = np.flip(img_patch, axis=3)
+            mask_patch = np.flip(mask_patch, axis=3)
+            
+        # .copy() потрібен, оскільки PyTorch не любить віддзеркалені numpy-масиви
+        return torch.from_numpy(img_patch.copy()), torch.from_numpy(mask_patch.copy())
 
 def get_dataloaders(csv_file, batch_size=2, patch_size=(64, 64, 64), val_split=0.2):
     from torch.utils.data import DataLoader, random_split
@@ -60,19 +72,7 @@ def get_dataloaders(csv_file, batch_size=2, patch_size=(64, 64, 64), val_split=0
     
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
     
     return train_loader, val_loader
-
-if __name__ == "__main__":
-    print("Тестуємо PyTorch Dataset...")
-    dataset = BraTSDataset("data/processed/dataset_index.csv", patch_size=(64, 64, 64))
-    img_tensor, mask_tensor = dataset[0]
-    
-    print(f"Формат вхідного тензора (зображення): {img_tensor.shape} (Має бути: 4, 64, 64, 64)")
-    print(f"Формат вихідного тензора (маска): {mask_tensor.shape} (Має бути: 1, 64, 64, 64)")
-    print(f"Тип даних маски: {mask_tensor.dtype}")
-    
-    train_loader, val_loader = get_dataloaders("data/processed/dataset_index.csv")
-    print(f"\nСтворено даталоадери. Тренувальних батчів: {len(train_loader)}, Валідаційних: {len(val_loader)}")

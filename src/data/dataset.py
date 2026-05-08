@@ -34,7 +34,23 @@ class BraTSDataset(Dataset):
         t2 = crop_volume(t2, min_c, max_c)
         flair = crop_volume(flair, min_c, max_c)
         seg = crop_volume(seg, min_c, max_c)
+
+        # ДОДАНО: Перевірка на мінімальний розмір (Padding)
+        h, w, d = t1.shape
+        ph, pw, pd_size = self.patch_size
         
+        if h < ph or w < pw or d < pd_size:
+            pad_h = max(0, ph - h)
+            pad_w = max(0, pw - w)
+            pad_d = max(0, pd_size - d)
+            pad_width = [(0, pad_h), (0, pad_w), (0, pad_d)]
+            
+            t1 = np.pad(t1, pad_width, mode='constant')
+            t1c = np.pad(t1c, pad_width, mode='constant')
+            t2 = np.pad(t2, pad_width, mode='constant')
+            flair = np.pad(flair, pad_width, mode='constant')
+            seg = np.pad(seg, pad_width, mode='constant')
+
         t1 = normalize_intensity(t1)
         t1c = normalize_intensity(t1c)
         t2 = normalize_intensity(t2)
@@ -42,12 +58,24 @@ class BraTSDataset(Dataset):
         
         image_volume = np.stack([t1, t1c, t2, flair], axis=0)
         
-        ph, pw, pd_size = self.patch_size
         _, h, w, d = image_volume.shape
         
-        start_h = np.random.randint(0, h - ph)
-        start_w = np.random.randint(0, w - pw)
-        start_d = np.random.randint(0, d - pd_size)
+        # Balanced Sampling: 50% ймовірність взяти патч із пухлиною
+        if np.random.rand() > 0.5 and np.sum(seg) > 0:
+            # Знаходимо всі координати, де є пухлина
+            tumor_coords = np.argwhere(seg > 0)
+            # Вибираємо випадковий піксель пухлини як центр патча
+            center_h, center_w, center_d = tumor_coords[np.random.randint(0, len(tumor_coords))]
+            
+            # Зміщуємо координати старту, щоб цей піксель був десь по центру патча
+            start_h = max(0, min(center_h - ph // 2, h - ph))
+            start_w = max(0, min(center_w - pw // 2, w - pw))
+            start_d = max(0, min(center_d - pd_size // 2, d - pd_size))
+        else:
+            # Звичайний випадковий патч (max(1, ...) щоб уникнути помилок якщо розміри рівні)
+            start_h = np.random.randint(0, max(1, h - ph))
+            start_w = np.random.randint(0, max(1, w - pw))
+            start_d = np.random.randint(0, max(1, d - pd_size))
         
         img_patch = image_volume[:, start_h:start_h+ph, start_w:start_w+pw, start_d:start_d+pd_size]
         mask_patch = seg[np.newaxis, start_h:start_h+ph, start_w:start_w+pw, start_d:start_d+pd_size]

@@ -29,7 +29,7 @@ def visualize_prediction(model_path, dataset_csv):
     dataset = BraTSDataset(dataset_csv, patch_size=(128, 128, 128))
     
     # Беремо пацієнта (наприклад, 15-го)
-    patient_idx = 118
+    patient_idx = 29
     image, mask = dataset[patient_idx]
     
     input_tensor = image.unsqueeze(0).to(device)

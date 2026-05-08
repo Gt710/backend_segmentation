@@ -140,7 +140,7 @@ class ComboLoss(nn.Module):
         # Комбінація (80% Dice + 20% BCE)
         return bce_loss * 0.2 + dice_loss * 0.8
 
-def train_model(epochs=100, batch_size=8, lr=0.001, resume=True):
+def train_model(epochs=100, batch_size=8, lr=0.0002, resume=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Використовуємо пристрій: {device}")
 

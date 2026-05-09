@@ -5,11 +5,14 @@ import tempfile
 import io
 import base64
 import glob
+import hashlib
+import hmac
 import numpy as np
 import torch
 import nibabel as nib
 import matplotlib.pyplot as plt
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException
+import scipy.ndimage as ndimage
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from reportlab.lib.pagesizes import letter
@@ -23,9 +26,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.unet3d import UNet3D
 from src.data.preprocessing import get_bounding_box, crop_volume, normalize_intensity
-from src.database import get_db, init_db, Patient, Scan
+from src.database import get_db, init_db, Patient, Scan, User, Log
 
-app = FastAPI(title="Brain Tumor Segmentation API with DB")
+app = FastAPI(title="Brain Tumor Segmentation API with Security")
 
 # Ініціалізація БД
 init_db()
@@ -47,6 +50,93 @@ try:
     pdfmetrics.registerFont(TTFont('Arial-Bold', 'C:/Windows/Fonts/arialbd.ttf'))
 except Exception as e:
     print(f"Попередження: Не вдалося завантажити шрифти Arial: {e}")
+
+# --- ЗАСОБИ БЕЗПЕКИ ---
+
+# 1. Хешування паролів (PBKDF2)
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return base64.b64encode(salt + pwd_hash).decode('utf-8')
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        data = base64.b64decode(stored_hash.encode('utf-8'))
+        salt = data[:16]
+        stored_pwd_hash = data[16:]
+        new_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+        return hmac.compare_digest(stored_pwd_hash, new_hash)
+    except:
+        return False
+
+# 2. Шифрування полів БД (XOR + Base64 - Спрощена реалізація для диплому)
+# У реальному проекті використовуйте cryptography.fernet
+SECRET_KEY = "diploma_secret_key_123"
+
+def encrypt_field(data: str) -> str:
+    if not data: return data
+    xor_data = "".join(chr(ord(c) ^ ord(SECRET_KEY[i % len(SECRET_KEY)])) for i, c in enumerate(data))
+    return base64.b64encode(xor_data.encode('utf-8')).decode('utf-8')
+
+def decrypt_field(encoded_data: str) -> str:
+    if not encoded_data: return encoded_data
+    try:
+        data = base64.b64decode(encoded_data.encode('utf-8')).decode('utf-8')
+        return "".join(chr(ord(c) ^ ord(SECRET_KEY[i % len(SECRET_KEY)])) for i, c in enumerate(data))
+    except:
+        return encoded_data
+
+# 3. Хеш-ланцюжки для логів
+def add_secure_log(message: str, db: Session):
+    last_log = db.query(Log).order_by(Log.id.desc()).first()
+    prev_hash = last_log.current_hash if last_log else "0" * 64
+    
+    data_to_hash = f"{message}{prev_hash}"
+    current_hash = hashlib.sha256(data_to_hash.encode('utf-8')).hexdigest()
+    
+    log = Log(message=message, previous_hash=prev_hash, current_hash=current_hash)
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+# 4. Захист ШІ від атак (Spatial Smoothing)
+def apply_spatial_smoothing(image_volume):
+    # Застосовуємо Гауссів фільтр для розмиття (згладжування)
+    smoothed = np.zeros_like(image_volume)
+    for c in range(image_volume.shape[0]):
+        smoothed[c] = ndimage.gaussian_filter(image_volume[c], sigma=0.5)
+    return smoothed
+
+# 5. Рольова модель (RBAC) - Депенденсі
+def get_current_user(username: str = Header(None), db: Session = Depends(get_db)):
+    if not username:
+        raise HTTPException(status_code=401, detail="Потрібна авторизація (передайте заголовок username)")
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Користувача не знайдено")
+    return user
+
+def require_role(role: str):
+    def role_checker(user: User = Depends(get_current_user)):
+        if user.role != role and user.role != "Admin": # Адмін може все
+            raise HTTPException(status_code=403, detail="Недостатньо прав доступу")
+        return user
+    return role_checker
+
+# Створення демо-користувачів
+@app.on_event("startup")
+def create_demo_users():
+    db = next(get_db())
+    if not db.query(User).filter(User.username == "admin").first():
+        admin = User(username="admin", password_hash=hash_password("admin123"), role="Admin")
+        doctor = User(username="doctor", password_hash=hash_password("doctor123"), role="Radiologist")
+        db.add(admin)
+        db.add(doctor)
+        db.commit()
+        print("Демо-користувачі створені: admin/admin123, doctor/doctor123")
+
+# --- КІНЕЦЬ ЗАСОБІВ БЕЗПЕКИ ---
 
 def generate_pdf_report(volume, conclusion, slices_images, patient=None):
     buffer = io.BytesIO()
@@ -76,9 +166,14 @@ def generate_pdf_report(volume, conclusion, slices_images, patient=None):
     story.append(Spacer(1, 12))
     
     if patient:
-        story.append(Paragraph(f"<b>Пацієнт:</b> {patient.first_name} {patient.last_name}", normal_style))
+        # Розшифровуємо дані для звіту
+        f_name = decrypt_field(patient.first_name)
+        l_name = decrypt_field(patient.last_name)
+        phone = decrypt_field(patient.phone)
+        
+        story.append(Paragraph(f"<b>Пацієнт:</b> {f_name} {l_name}", normal_style))
         story.append(Paragraph(f"<b>Дата народження:</b> {patient.dob}", normal_style))
-        story.append(Paragraph(f"<b>Телефон:</b> {patient.phone}", normal_style))
+        story.append(Paragraph(f"<b>Телефон:</b> {phone}", normal_style))
         if patient.notes:
             story.append(Paragraph(f"<b>Нотатки:</b> {patient.notes}", normal_style))
         story.append(Spacer(1, 12))
@@ -116,32 +211,63 @@ def generate_pdf_report(volume, conclusion, slices_images, patient=None):
     buffer.seek(0)
     return buffer.read()
 
-# Ендпоінти для пацієнтів
+# Ендпоінти
 @app.get("/patients")
-def get_patients(db: Session = Depends(get_db)):
+def get_patients(db: Session = Depends(get_db), current_user: User = Depends(require_role("Radiologist"))):
     patients = db.query(Patient).all()
-    return patients
+    
+    results = []
+    for p in patients:
+        results.append({
+            "id": p.id,
+            "first_name": decrypt_field(p.first_name),
+            "last_name": decrypt_field(p.last_name),
+            "dob": p.dob,
+            "phone": decrypt_field(p.phone),
+            "notes": p.notes,
+            "created_at": p.created_at.isoformat() if p.created_at else None
+        })
+    
+    add_secure_log(f"Користувач {current_user.username} переглянув список пацієнтів", db)
+    return results
 
 @app.post("/patients")
-def create_patient(first_name: str, last_name: str, dob: str, phone: str, notes: str = None, db: Session = Depends(get_db)):
-    patient = Patient(first_name=first_name, last_name=last_name, dob=dob, phone=phone, notes=notes)
+def create_patient(first_name: str, last_name: str, dob: str, phone: str, notes: str = None, 
+                   db: Session = Depends(get_db), current_user: User = Depends(require_role("Radiologist"))):
+    # Шифруємо чутливі дані перед збереженням
+    enc_first_name = encrypt_field(first_name)
+    enc_last_name = encrypt_field(last_name)
+    enc_phone = encrypt_field(phone)
+    
+    patient = Patient(first_name=enc_first_name, last_name=enc_last_name, dob=dob, phone=enc_phone, notes=notes)
     db.add(patient)
     db.commit()
     db.refresh(patient)
-    return patient
+    
+    add_secure_log(f"Користувач {current_user.username} створив пацієнта ID {patient.id}", db)
+    
+    return {
+        "id": patient.id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "dob": dob,
+        "phone": phone,
+        "notes": notes,
+        "created_at": patient.created_at.isoformat() if patient.created_at else None
+    }
 
-# Основний ендпоінт аналізу
 @app.post("/analyze")
 async def analyze_scan(
     patient_id: int,
-    scan_number: str, # наприклад "00005"
-    db: Session = Depends(get_db)
+    scan_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("Radiologist"))
 ):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Пацієнта не знайдено")
         
-    # Пошук файлів на сервері
+    # Пошук файлів на сервері (Ізоляція/Валідація)
     base_dir = "data/raw/BraTS-GLI/train"
     pattern = os.path.join(base_dir, f"BraTS-GLI-{scan_number}-*")
     folders = glob.glob(pattern)
@@ -149,30 +275,35 @@ async def analyze_scan(
     if not folders:
         raise HTTPException(status_code=404, detail=f"Папку для пацієнта BraTS-GLI-{scan_number} не знайдено")
         
-    patient_dir = folders[0] # Беремо першу знайдено папку
+    patient_dir = folders[0]
     
-    # Шукаємо файли
-    t1_files = glob.glob(os.path.join(patient_dir, "*-t1n.nii.gz"))
-    t1c_files = glob.glob(os.path.join(patient_dir, "*-t1c.nii.gz"))
-    t2_files = glob.glob(os.path.join(patient_dir, "*-t2w.nii.gz"))
-    flair_files = glob.glob(os.path.join(patient_dir, "*-t2f.nii.gz"))
-    
-    if not (t1_files and t1c_files and t2_files and flair_files):
-        raise HTTPException(status_code=404, detail="Не всі модальності (T1, T1c, T2, FLAIR) знайдено в папці")
+    try:
+        # Валідація розширень
+        t1_files = glob.glob(os.path.join(patient_dir, "*-t1n.nii.gz"))
+        t1c_files = glob.glob(os.path.join(patient_dir, "*-t1c.nii.gz"))
+        t2_files = glob.glob(os.path.join(patient_dir, "*-t2w.nii.gz"))
+        flair_files = glob.glob(os.path.join(patient_dir, "*-t2f.nii.gz"))
         
-    t1_path = t1_files[0]
-    t1c_path = t1c_files[0]
-    t2_path = t2_files[0]
-    flair_path = flair_files[0]
-    
-    # Завантаження та обробка
-    t1_img = nib.load(t1_path)
-    t1_data = t1_img.get_fdata().astype(np.float32)
-    t1c_data = nib.load(t1c_path).get_fdata().astype(np.float32)
-    t2_data = nib.load(t2_path).get_fdata().astype(np.float32)
-    flair_img = nib.load(flair_path)
-    flair_data = flair_img.get_fdata().astype(np.float32)
-    
+        if not (t1_files and t1c_files and t2_files and flair_files):
+            raise HTTPException(status_code=404, detail="Не всі модальності знайдено")
+            
+        t1_path = t1_files[0]
+        t1c_path = t1c_files[0]
+        t2_path = t2_files[0]
+        flair_path = flair_files[0]
+        
+        # Завантаження (з обробкою помилок)
+        t1_img = nib.load(t1_path)
+        t1_data = t1_img.get_fdata().astype(np.float32)
+        t1c_data = nib.load(t1c_path).get_fdata().astype(np.float32)
+        t2_data = nib.load(t2_path).get_fdata().astype(np.float32)
+        flair_img = nib.load(flair_path)
+        flair_data = flair_img.get_fdata().astype(np.float32)
+        
+    except Exception as e:
+        add_secure_log(f"Помилка парсингу файлів для пацієнта {scan_number}: {str(e)}", db)
+        raise HTTPException(status_code=500, detail=f"Помилка обробки медичних файлів: {str(e)}")
+        
     header = flair_img.header
     pixdim = header['pixdim']
     voxel_volume_mm3 = pixdim[1] * pixdim[2] * pixdim[3]
@@ -190,6 +321,9 @@ async def analyze_scan(
     flair_norm = normalize_intensity(flair_cropped)
     
     image_volume = np.stack([t1_norm, t1c_norm, t2_norm, flair_norm], axis=0)
+    
+    # ЗАХИСТ ШІ: Spatial Smoothing
+    image_volume = apply_spatial_smoothing(image_volume)
     
     c, h, w, d = image_volume.shape
     ph, pw, pd = h, w, d
@@ -252,7 +386,6 @@ async def analyze_scan(
     pdf_bytes = generate_pdf_report(volume_cm3, conclusion, slices_images, patient)
     pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
     
-    # Збереження результату в БД
     scan = Scan(
         patient_id=patient.id,
         status="completed",
@@ -263,12 +396,14 @@ async def analyze_scan(
     db.commit()
     db.refresh(scan)
     
+    add_secure_log(f"Користувач {current_user.username} провів аналіз для пацієнта ID {patient.id}. Об'єм: {volume_cm3:.2f} см³", db)
+    
     return {
         "status": "success",
         "patient": {
             "id": patient.id,
-            "first_name": patient.first_name,
-            "last_name": patient.last_name,
+            "first_name": decrypt_field(patient.first_name),
+            "last_name": decrypt_field(patient.last_name),
             "dob": patient.dob,
             "notes": patient.notes,
             "created_at": patient.created_at.isoformat(),
@@ -286,4 +421,4 @@ async def analyze_scan(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

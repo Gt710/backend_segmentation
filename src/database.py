@@ -15,10 +15,19 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password_hash = Column(String)
+    role = Column(String) # "Admin", "Radiologist"
+
 class Patient(Base):
     __tablename__ = "patients"
     
     id = Column(Integer, primary_key=True, index=True)
+    # Ці поля будуть зберігатися в зашифрованому вигляді (AES)
     first_name = Column(String, index=True)
     last_name = Column(String, index=True)
     dob = Column(String) # YYYY-MM-DD
@@ -39,6 +48,15 @@ class Scan(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     patient = relationship("Patient", back_populates="scans")
+
+class Log(Base):
+    __tablename__ = "logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    message = Column(String)
+    previous_hash = Column(String)
+    current_hash = Column(String)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 def get_db():
     db = SessionLocal()

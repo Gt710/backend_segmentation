@@ -6,7 +6,17 @@ import requests
 def interactive_test():
     url = "http://localhost:8001"
     
-    print("=== NeuroSegment AI: Тестування з БД ===")
+    print("=== NeuroSegment AI: Тестування з Безпекою ===")
+    
+    # Симуляція логіну для отримання ролі
+    print("Введіть дані для авторизації:")
+    username = input("Username (наприклад, doctor або admin): ").strip()
+    
+    headers = {
+        "username": username
+    }
+    
+    print("\nОберіть дію:")
     print("1. Створити нового пацієнта")
     print("2. Обрати існуючого пацієнта")
     
@@ -30,12 +40,18 @@ def interactive_test():
                 "dob": dob,
                 "phone": phone,
                 "notes": notes
-            })
+            }, headers=headers)
             
             if response.status_code == 200:
                 patient = response.json()
                 patient_id = patient['id']
                 print(f"Успішно створено пацієнта! ID: {patient_id}")
+            elif response.status_code == 403:
+                print("Помилка: Недостатньо прав доступу для створення пацієнта.")
+                return
+            elif response.status_code == 401:
+                print("Помилка авторизації. Невірний username.")
+                return
             else:
                 print(f"Помилка створення пацієнта: {response.status_code}")
                 print(response.text)
@@ -47,14 +63,14 @@ def interactive_test():
     elif choice == "2":
         print("\n--- Вибір існуючого пацієнта ---")
         try:
-            response = requests.get(f"{url}/patients")
+            response = requests.get(f"{url}/patients", headers=headers)
             if response.status_code == 200:
                 patients = response.json()
                 if not patients:
                     print("Пацієнтів у базі немає. Створіть нового.")
                     return
                     
-                print("\nСписок пацієнтів:")
+                print("\nСписок пацієнтів (Дані розшифровані сервером):")
                 for p in patients:
                     print(f"ID: {p['id']} | {p['first_name']} {p['last_name']} | ДН: {p['dob']}")
                     
@@ -64,6 +80,9 @@ def interactive_test():
                 except ValueError:
                     print("Некоректний ID.")
                     return
+            elif response.status_code == 403:
+                print("Помилка: Недостатньо прав доступу для перегляду пацієнтів.")
+                return
             else:
                 print(f"Помилка отримання списку пацієнтів: {response.status_code}")
                 return
@@ -78,12 +97,13 @@ def interactive_test():
     scan_number = input("Введіть номер знімків nnnnn (наприклад, 00005): ").strip()
     
     print(f"\nВідправка запиту на аналіз для пацієнта ID {patient_id}, знімки {scan_number}...")
+    print("(Перед аналізом ШІ застосовується Spatial Smoothing для захисту від атак)")
     
     try:
         response = requests.post(f"{url}/analyze", params={
             "patient_id": patient_id,
             "scan_number": scan_number
-        })
+        }, headers=headers)
         
         if response.status_code == 200:
             data = response.json()
@@ -98,10 +118,11 @@ def interactive_test():
             pdf_base64 = data['pdf_report_base64']
             pdf_bytes = base64.b64decode(pdf_base64)
             
-            output_pdf = f"report_patient_{patient_id}_{scan_number}.pdf"
+            output_pdf = f"report_patient_{patient_id}_{scan_number}_secure.pdf"
             with open(output_pdf, "wb") as f:
                 f.write(pdf_bytes)
-            print(f"\nЗвіт збережено у: {output_pdf}")
+            print(f"\nЗвіт (захищений) збережено у: {output_pdf}")
+            print("Дії залогівано в захищений журнал (Hash Chains)")
             
         else:
             print(f"\nПомилка сервера: {response.status_code}")

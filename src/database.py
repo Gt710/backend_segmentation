@@ -45,6 +45,7 @@ class Scan(Base):
     status = Column(String) # e.g., "completed", "failed"
     tumor_volume_cm3 = Column(Float)
     conclusion = Column(String)
+    tumor_nature = Column(String) # "Доброякісна", "Злоякісна", "Недостатньо даних"
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     patient = relationship("Patient", back_populates="scans")

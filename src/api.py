@@ -138,7 +138,7 @@ def create_demo_users():
 
 # --- КІНЕЦЬ ЗАСОБІВ БЕЗПЕКИ ---
 
-def generate_pdf_report(volume, conclusion, slices_images, patient=None):
+def generate_pdf_report(volume, conclusion, slices_images, patient=None, tumor_nature="Недостатньо даних"):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     story = []
@@ -178,6 +178,8 @@ def generate_pdf_report(volume, conclusion, slices_images, patient=None):
             story.append(Paragraph(f"<b>Нотатки:</b> {patient.notes}", normal_style))
         story.append(Spacer(1, 12))
     
+    story.append(Paragraph("<b>Тип пухлини:</b> Гліома", normal_style))
+    story.append(Paragraph(f"<b>Характер (динаміка):</b> {tumor_nature}", normal_style))
     story.append(Paragraph(f"<b>Об'єм пухлини:</b> {volume:.2f} см³", normal_style))
     story.append(Paragraph(f"<b>Висновок:</b> {conclusion}", normal_style))
     story.append(Spacer(1, 12))
@@ -347,13 +349,15 @@ async def analyze_scan(
     volume_cm3 = (tumor_voxel_count * voxel_volume_mm3) / 1000.0
     
     if volume_cm3 == 0:
-        conclusion = "Пухлину не виявлено або її об'єм занадто малий."
-    elif volume_cm3 < 10:
-        conclusion = "Малий об'єм пухлини. Рекомендовано регулярне спостереження."
-    elif volume_cm3 < 50:
-        conclusion = "Середній об'єм пухлини. Необхідна консультація онколога та додаткові обстеження."
+        conclusion = "Відсутність макроскопічної пухлини. Пухлина не візуалізується. Може відповідати стану після повного видалення або повної ремісії."
+    elif volume_cm3 < 15:
+        conclusion = "Малий об'єм. Характерно для ранніх стадій або низькодиференційованих гліом (WHO Grade 1-2). Часто дозволяє провести радикальне видалення з мінімальним ризиком дефіциту."
+    elif volume_cm3 < 40:
+        conclusion = "Середній об'єм. Пухлина стає клінічно значущою. Можлива поява судомного синдрому або осередкової симптоматики. Вимагає активного лікування (хірургія + променева терапія)."
+    elif volume_cm3 < 70:
+        conclusion = "Значний об'єм. Високий ризик перифокального набряку та мас-ефекту. Потребує дексаметазонової підтримки та планування циторедуктивної операції."
     else:
-        conclusion = "Великий об'єм пухлини. Потрібне термінове медичне втручання."
+        conclusion = "Критичний (гігантський) об'єм. Предиктор несприятливого прогнозу. Високий ризик дислокації мозку та вклинення. Необхідне термінове декомпресивне втручання."
         
     slices_images = []
     tumor_slices = np.where(np.sum(pred_np, axis=(0, 1)) > 0)[0]
@@ -383,14 +387,29 @@ async def analyze_scan(
         slices_images.append(buf)
         plt.close(fig)
         
-    pdf_bytes = generate_pdf_report(volume_cm3, conclusion, slices_images, patient)
+    # Прогнозування типу пухлини (доброякісна/злоякісна) на основі історії
+    previous_scans = db.query(Scan).filter(Scan.patient_id == patient.id, Scan.status == "completed").order_by(Scan.created_at.desc()).all()
+    
+    tumor_nature = "Недостатньо даних"
+    if previous_scans:
+        last_scan = previous_scans[0]
+        diff = volume_cm3 - last_scan.tumor_volume_cm3
+        if diff > 0:
+            tumor_nature = f"Злоякісна (прогресування). Об'єм збільшився на {diff:.2f} см³"
+        elif diff < 0:
+            tumor_nature = f"Доброякісна або регресія. Об'єм зменшився на {abs(diff):.2f} см³"
+        else:
+            tumor_nature = "Стабільний стан (без змін)"
+            
+    pdf_bytes = generate_pdf_report(volume_cm3, conclusion, slices_images, patient, tumor_nature)
     pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
     
     scan = Scan(
         patient_id=patient.id,
         status="completed",
         tumor_volume_cm3=float(volume_cm3),
-        conclusion=conclusion
+        conclusion=conclusion,
+        tumor_nature=tumor_nature
     )
     db.add(scan)
     db.commit()
@@ -412,7 +431,9 @@ async def analyze_scan(
                     "id": scan.id,
                     "status": scan.status,
                     "tumor_volume_cm3": scan.tumor_volume_cm3,
-                    "conclusion": scan.conclusion
+                    "conclusion": scan.conclusion,
+                    "tumor_type": "Гліома",
+                    "tumor_nature": scan.tumor_nature
                 }
             ]
         },

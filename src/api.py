@@ -441,6 +441,26 @@ async def analyze_scan(
     np.save(f"data/processed/mask_{scan.id}.npy", full_mask)
     with open(f"data/processed/report_{scan.id}.pdf", "wb") as f:
         f.write(pdf_bytes)
+        
+    # Генеруємо та зберігаємо прев'ю (зріз 77) для швидкого завантаження в списку
+    try:
+        slice_idx = 77
+        if slice_idx < flair_data.shape[2]:
+            img_slice = flair_data[:, :, slice_idx]
+            mask_slice = full_mask[:, :, slice_idx]
+            
+            fig, ax = plt.subplots(figsize=(4, 4))
+            ax.imshow(img_slice, cmap='gray')
+            if np.sum(mask_slice) > 0:
+                ax.imshow(mask_slice, cmap='Reds', alpha=0.5)
+            ax.axis('off')
+            plt.tight_layout(pad=0)
+            
+            plt.savefig(f"data/processed/preview_{scan.id}.png", bbox_inches='tight', pad_inches=0)
+            plt.close(fig)
+    except Exception as e:
+        print(f"Error generating preview: {e}")
+
 
 
 
@@ -471,7 +491,14 @@ async def analyze_scan(
     }
 @app.get("/scans/{scan_id}/slice/{slice_idx}")
 def get_scan_slice(scan_id: int, slice_idx: int, db: Session = Depends(get_db)):
+    if slice_idx == 77:
+        preview_path = f"data/processed/preview_{scan_id}.png"
+        if os.path.exists(preview_path):
+            from fastapi.responses import FileResponse
+            return FileResponse(preview_path, media_type="image/png")
+            
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
+
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
         
@@ -512,10 +539,15 @@ def get_scan_slice(scan_id: int, slice_idx: int, db: Session = Depends(get_db)):
     ax.axis('off')
     plt.tight_layout()
     
+    # Зберігаємо прев'ю для кешування, якщо це зріз 77
+    if slice_idx == 77:
+        plt.savefig(f"data/processed/preview_{scan_id}.png", bbox_inches='tight', pad_inches=0)
+        
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
     buf.seek(0)
     plt.close(fig)
+
     
     from fastapi.responses import Response
     return Response(content=buf.read(), media_type="image/png")

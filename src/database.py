@@ -6,7 +6,8 @@ import datetime
 
 # Створюємо директорію для БД якщо її немає
 os.makedirs("data", exist_ok=True)
-SQLALCHEMY_DATABASE_URL = "sqlite:///./data/segmentation.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:///./data/segmentation_v2.db"
+
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
@@ -42,6 +43,7 @@ class Scan(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"))
+    scan_number = Column(String) # BraTS scan number (e.g., "00005")
     status = Column(String) # e.g., "completed", "failed"
     tumor_volume_cm3 = Column(Float)
     conclusion = Column(String)
@@ -49,6 +51,7 @@ class Scan(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     patient = relationship("Patient", back_populates="scans")
+
 
 class Log(Base):
     __tablename__ = "logs"

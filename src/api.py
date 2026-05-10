@@ -10,7 +10,10 @@ import hmac
 import numpy as np
 import torch
 import nibabel as nib
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 import scipy.ndimage as ndimage
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Header
 from fastapi.responses import JSONResponse
@@ -227,11 +230,21 @@ def get_patients(db: Session = Depends(get_db), current_user: User = Depends(req
             "dob": p.dob,
             "phone": decrypt_field(p.phone),
             "notes": p.notes,
-            "created_at": p.created_at.isoformat() if p.created_at else None
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "scans": [
+                {
+                    "id": s.id,
+                    "status": s.status,
+                    "upload_date": s.created_at.isoformat() if s.created_at else None,
+                    "tumor_volume_cm3": s.tumor_volume_cm3,
+                    "conclusion": s.conclusion
+                } for s in p.scans
+            ]
         })
     
     add_secure_log(f"Користувач {current_user.username} переглянув список пацієнтів", db)
     return results
+
 
 @app.post("/patients")
 def create_patient(first_name: str, last_name: str, dob: str, phone: str, notes: str = None, 
@@ -406,6 +419,7 @@ async def analyze_scan(
     
     scan = Scan(
         patient_id=patient.id,
+        scan_number=scan_number,
         status="completed",
         tumor_volume_cm3=float(volume_cm3),
         conclusion=conclusion,
@@ -414,6 +428,21 @@ async def analyze_scan(
     db.add(scan)
     db.commit()
     db.refresh(scan)
+    
+    # Зберігаємо маску та звіт на диск для ендпоінтів
+    os.makedirs("data/processed", exist_ok=True)
+    
+    # Створюємо повнорозмірну маску, щоб вона співпадала з оригінальним зображенням
+    full_mask = np.zeros(flair_data.shape, dtype=np.float32)
+    full_mask[min_c[0]:min_c[0]+h, min_c[1]:min_c[1]+w, min_c[2]:min_c[2]+d] = pred_np
+
+    
+    np.save(f"data/processed/mask_{scan.id}.npy", full_mask)
+    with open(f"data/processed/report_{scan.id}.pdf", "wb") as f:
+        f.write(pdf_bytes)
+
+
+
     
     add_secure_log(f"Користувач {current_user.username} провів аналіз для пацієнта ID {patient.id}. Об'єм: {volume_cm3:.2f} см³", db)
     
@@ -439,7 +468,107 @@ async def analyze_scan(
         },
         "pdf_report_base64": pdf_base64
     }
+@app.get("/scans/{scan_id}/slice/{slice_idx}")
+def get_scan_slice(scan_id: int, slice_idx: int, db: Session = Depends(get_db)):
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    # Find files based on scan_number
+    base_dir = "data/raw/BraTS-GLI/train"
+    pattern = os.path.join(base_dir, f"BraTS-GLI-{scan.scan_number}-*")
+    folders = glob.glob(pattern)
+    
+    if not folders:
+        raise HTTPException(status_code=404, detail="Files not found for this scan")
+        
+    patient_dir = folders[0]
+    flair_files = glob.glob(os.path.join(patient_dir, "*-t2f.nii.gz"))
+    if not flair_files:
+        raise HTTPException(status_code=404, detail="FLAIR file not found")
+        
+    flair_path = flair_files[0]
+    flair_img = nib.load(flair_path)
+    flair_data = flair_img.get_fdata().astype(np.float32)
+    
+    if slice_idx < 0 or slice_idx >= flair_data.shape[2]:
+        raise HTTPException(status_code=400, detail="Invalid slice index")
+        
+    img_slice = flair_data[:, :, slice_idx]
+    
+    # Load mask if exists
+    mask_path = f"data/processed/mask_{scan_id}.npy"
+    mask_slice = None
+    if os.path.exists(mask_path):
+        mask_data = np.load(mask_path)
+        mask_slice = mask_data[:, :, slice_idx]
+        
+    # Generate image
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.imshow(img_slice, cmap='gray')
+    if mask_slice is not None and np.sum(mask_slice) > 0:
+        ax.imshow(mask_slice, cmap='jet', alpha=0.5)
+    ax.axis('off')
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    from fastapi.responses import Response
+    return Response(content=buf.read(), media_type="image/png")
+
+@app.get("/scans/{scan_id}/report")
+def get_scan_report(scan_id: int, db: Session = Depends(get_db)):
+    report_path = f"data/processed/report_{scan_id}.pdf"
+    if not os.path.exists(report_path):
+        raise HTTPException(status_code=404, detail="Report not found")
+        
+    from fastapi.responses import FileResponse
+    return FileResponse(report_path, media_type="application/pdf", filename=f"report_{scan_id}.pdf")
+@app.get("/scans/{scan_id}")
+def get_scan_details(scan_id: int, db: Session = Depends(get_db)):
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    return {
+        "id": scan.id,
+        "patient_id": scan.patient_id,
+        "status": scan.status,
+        "tumor_volume_cm3": scan.tumor_volume_cm3,
+        "conclusion": scan.conclusion,
+        "tumor_nature": scan.tumor_nature
+    }
+@app.delete("/patients/{patient_id}")
+def delete_patient(patient_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_role("Radiologist"))):
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+        
+    db.query(Scan).filter(Scan.patient_id == patient_id).delete()
+    db.delete(patient)
+    db.commit()
+    
+    add_secure_log(f"Користувач {current_user.username} видалив пацієнта ID {patient_id}", db)
+    return {"status": "success"}
+
+@app.delete("/scans/{scan_id}")
+def delete_scan(scan_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_role("Radiologist"))):
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    db.delete(scan)
+    db.commit()
+    
+    add_secure_log(f"Користувач {current_user.username} видалив скан ID {scan_id}", db)
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
+
+
+

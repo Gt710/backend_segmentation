@@ -270,6 +270,7 @@ def create_patient(first_name: str, last_name: str, dob: str, phone: str, notes:
         "notes": notes,
         "created_at": patient.created_at.isoformat() if patient.created_at else None
     }
+    
 
 @app.post("/analyze")
 async def analyze_scan(
